@@ -47,6 +47,49 @@ async function req(app, method, path, opts = {}) {
   } finally { server.close(); }
 }
 
+describe('GET /api/messages/templates', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/messages/templates');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 for Participant (no messages.manage_templates)', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/messages/templates', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('should return templates list for Admin', async () => {
+    const templates = [
+      { id: 'tmpl1', name: 'enrollment_confirmation', version: 1, category: 'enrollment', is_active: true },
+      { id: 'tmpl2', name: 'score_release', version: 1, category: 'score_release', is_active: true },
+    ];
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      if (t === 'message_templates') return chain(templates);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/messages/templates', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body), 'Response should be an array');
+    assert.equal(res.body.length, 2);
+    assert.equal(res.body[0].name, 'enrollment_confirmation');
+    assert.equal(res.body[1].category, 'score_release');
+  });
+});
+
 describe('POST /api/messages/templates', () => {
   it('should return 400 with missing fields', async () => {
     const db = (t) => {
@@ -142,13 +185,19 @@ describe('POST /api/messages/broadcast', () => {
 });
 
 describe('GET /api/messages/inbox', () => {
-  it('should return inbox for authenticated user', async () => {
+  it('should return inbox with pagination and unread count', async () => {
     const db = (t) => chain([{ count: '0' }]);
     db.raw = () => Promise.resolve({ rows: [] });
     const res = await req(buildApp(db), 'GET', '/api/messages/inbox', {
       headers: { Authorization: authHeader(FIXTURES.participantUser) },
     });
     assert.equal(res.status, 200);
+    assert.ok(res.body.data !== undefined, 'Response should contain data');
+    assert.ok(res.body.pagination !== undefined, 'Response should contain pagination');
+    assert.equal(res.body.pagination.page, 1);
+    assert.equal(res.body.pagination.per_page, 20);
+    assert.ok(res.body.unread_count !== undefined, 'Response should contain unread_count');
+    assert.equal(typeof res.body.unread_count, 'number');
   });
 });
 
@@ -181,6 +230,85 @@ describe('POST /api/messages/:id/read', () => {
       headers: { Authorization: authHeader(FIXTURES.participantUser) },
     });
     assert.equal(res.status, 404);
+  });
+});
+
+describe('POST /api/messages/mark-all-read', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/messages/mark-all-read');
+    assert.equal(res.status, 401);
+  });
+
+  it('should mark all unread messages as read and return count', async () => {
+    const db = (t) => {
+      if (t === 'messages') return chain(3); // 3 updated rows
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/messages/mark-all-read', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.marked_read !== undefined, 'Response should include marked_read count');
+    assert.equal(res.body.marked_read, 3);
+  });
+
+  it('should return 0 when no unread messages', async () => {
+    const db = (t) => {
+      if (t === 'messages') return chain(0);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/messages/mark-all-read', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.marked_read, 0);
+  });
+});
+
+describe('GET /api/messages/subscriptions/me', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/messages/subscriptions/me');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return subscription preferences for authenticated user', async () => {
+    const subs = [
+      { id: 's1', user_id: FIXTURES.participantUser.id, category: 'enrollment', in_app_enabled: true },
+      { id: 's2', user_id: FIXTURES.participantUser.id, category: 'score_release', in_app_enabled: false },
+    ];
+    const db = (t) => {
+      if (t === 'subscriptions') return chain(subs);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/messages/subscriptions/me', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body), 'Response should be an array');
+    assert.equal(res.body.length, 2);
+    assert.equal(res.body[0].category, 'enrollment');
+    assert.equal(res.body[0].in_app_enabled, true);
+    assert.equal(res.body[1].category, 'score_release');
+    assert.equal(res.body[1].in_app_enabled, false);
+  });
+
+  it('should return empty array when no subscriptions exist', async () => {
+    const db = (t) => {
+      if (t === 'subscriptions') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/messages/subscriptions/me', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body));
+    assert.equal(res.body.length, 0);
   });
 });
 

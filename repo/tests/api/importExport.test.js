@@ -139,8 +139,109 @@ describe('POST /api/data/import', () => {
   });
 });
 
+describe('POST /api/data/consistency-check', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/data/consistency-check');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 for Participant (no data.consistency_check)', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/data/consistency-check', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('should return consistency report with no orphans for Admin', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/data/consistency-check', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.checked_at, 'Response should include checked_at timestamp');
+    assert.ok(Array.isArray(res.body.orphan_records), 'Should include orphan_records array');
+    assert.ok(Array.isArray(res.body.foreign_key_issues), 'Should include foreign_key_issues array');
+    assert.equal(res.body.total_issues, 0);
+  });
+
+  it('should return consistency report for Ops Manager', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS['Operations Manager']);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/data/consistency-check', {
+      headers: { Authorization: authHeader(FIXTURES.opsUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.checked_at);
+    assert.equal(typeof res.body.total_issues, 'number');
+  });
+});
+
+describe('POST /api/data/backup', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/data/backup');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 for Participant (no data.backup)', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/data/backup', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('should return backup with job and backup object for Admin', async () => {
+    const job = { id: 'j1', type: 'backup', status: 'completed', total_records: 0 };
+    // Backup iterates all ALLOWED_TABLES, then inserts into import_jobs.
+    // For RBAC middleware: first 'user_roles' call is for permissions check.
+    let permChecked = false;
+    const db = (t) => {
+      if (t === 'user_roles' && !permChecked) {
+        permChecked = true;
+        return chain(ROLE_PERMISSIONS.Administrator);
+      }
+      if (t === 'import_jobs') return chain([job]);
+      if (t === 'audit_logs') return chain([]);
+      // All other table calls (including users for backup data) return []
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/data/backup', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.job, 'Response should include job');
+    assert.ok(res.body.backup, 'Response should include backup object');
+    assert.equal(res.body.job.type, 'backup');
+    assert.equal(res.body.job.status, 'completed');
+    assert.equal(typeof res.body.backup, 'object', 'Backup should be an object keyed by table');
+  });
+});
+
 describe('GET /api/data/jobs', () => {
-  it('should return jobs list for admin', async () => {
+  it('should return jobs list with pagination for admin', async () => {
     const db = (t) => {
       if (t === 'users') return chain({ is_active: true });
       if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
@@ -152,6 +253,11 @@ describe('GET /api/data/jobs', () => {
       headers: { Authorization: authHeader(FIXTURES.adminUser) },
     });
     assert.equal(res.status, 200);
+    assert.ok(res.body.data !== undefined, 'Response should contain data');
+    assert.ok(res.body.pagination !== undefined, 'Response should contain pagination');
+    assert.equal(res.body.pagination.page, 1);
+    assert.equal(res.body.pagination.per_page, 20);
+    assert.equal(typeof res.body.pagination.total, 'number');
   });
 });
 

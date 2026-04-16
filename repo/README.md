@@ -6,54 +6,233 @@ Offline-first fitness and skills evaluation platform. Participants complete stru
 
 ---
 
-## Prerequisites
+## Quick Start
 
-**Local development:**
-- Node.js >= 20
-- PostgreSQL 16+
+The primary deployment method is Docker. A single command builds the app, starts PostgreSQL, runs migrations, seeds roles/permissions, and serves the API.
 
-**Containerized deployment:**
+### Prerequisites
+
 - Docker & Docker Compose
-- A `.env` file with `DB_PASSWORD`, `JWT_SECRET`, `ENCRYPTION_KEY`, and `CERTIFICATE_SECRET` set (see Quick Start below)
 
-## Quick Start (Docker)
+### 1. Configure secrets
 
 ```bash
-# 1. Create a .env file with required secrets (docker-compose reads it automatically)
 cp .env.example .env
-# Edit .env — you MUST set DB_PASSWORD, JWT_SECRET, ENCRYPTION_KEY, CERTIFICATE_SECRET
-# Generate secrets:
-#   node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"   # JWT_SECRET, CERTIFICATE_SECRET
-#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # ENCRYPTION_KEY
+```
 
-# 2. Build and start
+Edit `.env` and set the four required secrets:
+
+| Variable | How to generate |
+|---|---|
+| `DB_PASSWORD` | Any strong password |
+| `JWT_SECRET` | `node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"` |
+| `ENCRYPTION_KEY` | `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
+| `CERTIFICATE_SECRET` | `node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"` |
+
+### 2. Build and start
+
+```bash
 docker-compose up --build
-# API available at http://localhost:3000
-# Health check at http://localhost:3000/health
 ```
 
-The container auto-runs migrations and seeds on first start. If any required secret is missing, docker-compose will fail fast with an error message.
+The container auto-runs migrations and seeds on first start. The API is available at `http://localhost:3000`. If any required secret is missing, docker-compose will fail fast with an error message.
 
-## Quick Start (local)
+### 3. Create demo users
+
+After the container is running, register a user for each role. The first step is to register users via the `/api/auth/register` endpoint, then promote them to the appropriate role using the admin account.
 
 ```bash
-# 1. Install dependencies
-npm install
+# Register the admin user (automatically gets Participant role)
+curl -s -X POST http://localhost:3000/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","email":"admin@demo.local","password":"AdminPass12345!","full_name":"Demo Administrator"}' | jq .
 
-# 2. Configure environment (copy and edit)
-cp .env.example .env
-# Edit .env with your PostgreSQL credentials and secrets
-
-# 3. Run migrations
-npm run migrate
-
-# 4. Seed roles, permissions, templates, violation categories
-npm run seed
-
-# 5. Start the server
-npm start          # production
-npm run dev        # development (auto-reload)
+# Save the admin token (you will use it to assign roles)
+ADMIN_TOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"AdminPass12345!"}' | jq -r .token)
 ```
+
+Then assign the Administrator role and register the remaining users:
+
+```bash
+# Get the admin user ID and Administrator role — assign it
+ADMIN_ID=$(curl -s http://localhost:3000/api/auth/me -H "Authorization: Bearer $ADMIN_TOKEN" | jq -r .id)
+curl -s -X POST "http://localhost:3000/api/users/$ADMIN_ID/roles" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"role_name":"Administrator"}'
+
+# Register and assign Operations Manager
+curl -s -X POST http://localhost:3000/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"opsmanager","email":"ops@demo.local","password":"OpsPass123456!","full_name":"Demo Ops Manager"}'
+OPS_ID=$(curl -s -X POST http://localhost:3000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"opsmanager","password":"OpsPass123456!"}' | jq -r .user.id)
+curl -s -X POST "http://localhost:3000/api/users/$OPS_ID/roles" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"role_name":"Operations Manager"}'
+
+# Register and assign Reviewer
+curl -s -X POST http://localhost:3000/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"reviewer","email":"reviewer@demo.local","password":"ReviewPass1234!","full_name":"Demo Reviewer"}'
+REVIEWER_ID=$(curl -s -X POST http://localhost:3000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"reviewer","password":"ReviewPass1234!"}' | jq -r .user.id)
+curl -s -X POST "http://localhost:3000/api/users/$REVIEWER_ID/roles" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"role_name":"Reviewer"}'
+
+# Register and assign Coach
+curl -s -X POST http://localhost:3000/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"coach","email":"coach@demo.local","password":"CoachPass12345!","full_name":"Demo Coach"}'
+COACH_ID=$(curl -s -X POST http://localhost:3000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"coach","password":"CoachPass12345!"}' | jq -r .user.id)
+curl -s -X POST "http://localhost:3000/api/users/$COACH_ID/roles" \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"role_name":"Coach"}'
+
+# Register Participant (default role — no promotion needed)
+curl -s -X POST http://localhost:3000/api/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"participant","email":"participant@demo.local","password":"PartPass123456!","full_name":"Demo Participant"}'
+```
+
+### Demo Credentials
+
+After running the setup commands above, the following accounts are available:
+
+| Role | Username | Email | Password |
+|---|---|---|---|
+| **Administrator** | `admin` | `admin@demo.local` | `AdminPass12345!` |
+| **Operations Manager** (alias: OManager) | `opsmanager` | `ops@demo.local` | `OpsPass123456!` |
+| **Reviewer** | `reviewer` | `reviewer@demo.local` | `ReviewPass1234!` |
+| **Coach** | `coach` | `coach@demo.local` | `CoachPass12345!` |
+| **Participant** | `participant` | `participant@demo.local` | `PartPass123456!` |
+
+All passwords meet the 12-character minimum. Login via `POST /api/auth/login` returns a JWT token valid for 24 hours.
+
+---
+
+## Verification
+
+After the service is running, verify it is working correctly:
+
+### Health check
+
+```bash
+curl -s http://localhost:3000/health | jq .
+```
+
+Expected response:
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2026-04-16T12:00:00.000Z",
+  "uptime": 12.345
+}
+```
+
+### Login and get a token
+
+```bash
+curl -s -X POST http://localhost:3000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"AdminPass12345!"}' | jq .
+```
+
+Expected response:
+
+```json
+{
+  "user": {
+    "id": "...",
+    "username": "admin",
+    "email": "admin@demo.local",
+    "full_name": "Demo Administrator",
+    "roles": ["Participant", "Administrator"]
+  },
+  "token": "eyJhbGciOiJIUzI1NiIs..."
+}
+```
+
+### List plans (authenticated)
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"participant","password":"PartPass123456!"}' | jq -r .token)
+
+curl -s http://localhost:3000/api/plans \
+  -H "Authorization: Bearer $TOKEN" | jq .
+```
+
+Expected response:
+
+```json
+{
+  "data": [],
+  "pagination": {
+    "page": 1,
+    "per_page": 20,
+    "total": 0,
+    "total_pages": 0
+  }
+}
+```
+
+### Create a campaign (requires campaigns.manage permission)
+
+```bash
+ADMIN_TOKEN=$(curl -s -X POST http://localhost:3000/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"AdminPass12345!"}' | jq -r .token)
+
+curl -s -X POST http://localhost:3000/api/campaigns \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Welcome Campaign","description":"Onboarding promotion"}' | jq .
+```
+
+Expected response:
+
+```json
+{
+  "id": "...",
+  "name": "Welcome Campaign",
+  "description": "Onboarding promotion",
+  "status": "draft",
+  "created_at": "..."
+}
+```
+
+### Run a data consistency check
+
+```bash
+curl -s -X POST http://localhost:3000/api/data/consistency-check \
+  -H "Authorization: Bearer $ADMIN_TOKEN" | jq .
+```
+
+Expected response:
+
+```json
+{
+  "checked_at": "2026-04-16T12:00:00.000Z",
+  "foreign_key_issues": [],
+  "orphan_records": [],
+  "total_issues": 0
+}
+```
+
+---
 
 ## Configuration
 
@@ -74,71 +253,28 @@ All configuration is in `src/config/index.js`, driven by environment variables:
 | `JWT_EXPIRES_IN` | `24h` | JWT token lifetime |
 | `DATA_DIR` | `./data` | Local storage directory for logs and metrics |
 
-Generate secrets:
-```bash
-node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"   # JWT_SECRET, CERTIFICATE_SECRET
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"   # ENCRYPTION_KEY
-```
-
-## Database Migrations
-
-```bash
-npm run migrate            # Apply all pending migrations
-npm run migrate:rollback   # Roll back the last migration batch
-```
-
-Migration files live in `src/db/migrations/`. The schema creates 25+ tables including users, roles, permissions, plans, tasks, activity_logs, assessment_rules, computed_scores, rankings, certificates, content_items, moderation_cases, appeals, campaigns, placements, coupons, messages, subscriptions, import_jobs, and more.
-
-## Seed Data
-
-```bash
-npm run seed
-```
-
-Seeds create:
-- **5 roles:** Administrator, Operations Manager (alias: OManager), Reviewer, Coach, Participant
-- **26 permissions** mapped to roles
-- **4 message templates:** enrollment confirmation, waitlist promotion, schedule change, score release
-- **2 violation categories:** Inappropriate Language (keyword-based), File Policy (type/size-based)
-
 ## Running Tests
 
-```bash
-# Full suite (167+ tests)
-./run_tests.sh
-
-# By category
-./run_tests.sh unit        # Unit tests only (pure functions, middleware)
-./run_tests.sh api         # API route tests only (HTTP-level with mock DB)
-
-# Via npm
-npm test                   # All tests
-npm run test:unit          # Unit tests
-npm run test:api           # API tests
-```
-
-Tests use Node.js built-in test runner (`node:test`) — no external test framework required. API tests mock the database layer and make real HTTP requests against Koa app instances.
-
-## Static Verification
+Run tests inside the app container:
 
 ```bash
-# Syntax check all source files
-node -e "
-const fs = require('fs');
-const path = require('path');
-function check(dir) {
-  for (const f of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, f.name);
-    if (f.isDirectory() && f.name !== 'node_modules') check(p);
-    else if (f.name.endsWith('.js')) {
-      try { require(p); console.log('OK', p); }
-      catch(e) { console.error('FAIL', p, e.message); process.exitCode = 1; }
-    }
-  }
-}
-check('./src');
-"
+# Full suite (390+ tests, unit + api)
+docker-compose exec app sh -c "NODE_ENV=test node --test tests/unit/*.test.js tests/api/*.test.js"
+
+# Unit tests only (pure functions, middleware — no DB required)
+docker-compose exec app sh -c "NODE_ENV=test node --test tests/unit/*.test.js"
+
+# API route tests only (HTTP-level with mock DB — no DB required)
+docker-compose exec app sh -c "NODE_ENV=test node --test tests/api/*.test.js"
+
+# Integration tests (runs against the live PostgreSQL instance)
+docker-compose exec app sh -c "NODE_ENV=test node --test tests/integration/*.test.js"
+
+# All tests including integration
+docker-compose exec app sh -c "NODE_ENV=test node --test tests/unit/*.test.js tests/api/*.test.js tests/integration/*.test.js"
 ```
+
+Tests use Node.js built-in test runner (`node:test`) — no external test framework required. API tests mock the database layer and make real HTTP requests against Koa app instances. Integration tests run against the live PostgreSQL database provided by the `db` service in docker-compose.
 
 ## API Overview
 
@@ -172,11 +308,12 @@ All endpoints are prefixed under their resource group. Authentication via `Autho
 
 ### Key Features
 
-- **Assessment scoring:** Configurable items (time/reps/combined), per-item weights summing to 1.00, min/max normalization to 0–100, outlier detection (3σ from trailing 30)
-- **Rankings:** Rolling 14-day window, Bronze ≥ 60 / Silver ≥ 75 / Gold ≥ 90
+- **Assessment scoring:** Configurable items (time/reps/combined), per-item weights summing to 1.00, min/max normalization to 0-100, outlier detection (3-sigma from trailing 30)
+- **Rankings:** Rolling 14-day window, Bronze >= 60 / Silver >= 75 / Gold >= 90
 - **Certificates:** HMAC-SHA256 tamper-evident verification, fully offline verification endpoint
 - **Content moderation:** Keyword lists, file type allowlists, size limits, SHA-256 fingerprint blocking, 14-day appeal window
-- **Campaigns:** Phased rollout (5% → 25% → 50% → 100%), deterministic A/B assignment, idempotent event ingestion
+- **Campaigns:** Phased rollout (5% -> 25% -> 50% -> 100%), deterministic A/B assignment, idempotent event ingestion
 - **Security:** Argon2id (min 12 chars), 10-attempt lockout/15 min, AES-256-GCM at rest, RBAC + ACL with deny overrides, immutable audit trail
 - **Observability:** Structured Pino logs, p95 latency tracking, persisted metrics snapshots
 - **Offline-first:** Zero external dependencies, single-node Docker deployment
+

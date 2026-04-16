@@ -47,8 +47,268 @@ async function req(app, method, path, opts = {}) {
   } finally { server.close(); }
 }
 
+describe('GET /api/campaigns', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 for Participant (no campaigns.manage)', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('should return paginated campaigns list for Ops Manager', async () => {
+    const campaigns = [
+      { id: 'cam1', name: 'Summer Sale', status: 'active' },
+      { id: 'cam2', name: 'Winter Promo', status: 'draft' },
+    ];
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS['Operations Manager']);
+      if (t === 'campaigns') return chain([{ count: '2' }]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns', {
+      headers: { Authorization: authHeader(FIXTURES.opsUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.data !== undefined, 'Response should contain data');
+    assert.ok(res.body.pagination !== undefined, 'Response should contain pagination');
+    assert.equal(res.body.pagination.page, 1);
+    assert.equal(res.body.pagination.per_page, 20);
+  });
+});
+
+describe('GET /api/campaigns/:id', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/cam1');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 404 for non-existent campaign', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      if (t === 'campaigns') return chain(null);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/fake', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('should return campaign with placements and coupons', async () => {
+    const campaign = { id: 'cam1', name: 'Summer Sale', status: 'active' };
+    const placements = [{ id: 'pl1', campaign_id: 'cam1', slot: 'homepage_banner' }];
+    const coupons = [{ id: 'cp1', campaign_id: 'cam1', code: 'SUMMER10' }];
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      if (t === 'campaigns') return chain(campaign);
+      if (t === 'placements') return chain(placements);
+      if (t === 'coupons') return chain(coupons);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/cam1', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.id, 'cam1');
+    assert.equal(res.body.name, 'Summer Sale');
+    assert.ok(Array.isArray(res.body.placements), 'Should include placements');
+    assert.equal(res.body.placements[0].slot, 'homepage_banner');
+    assert.ok(Array.isArray(res.body.coupons), 'Should include coupons');
+    assert.equal(res.body.coupons[0].code, 'SUMMER10');
+  });
+});
+
+describe('GET /api/campaigns/:id/ab-assignment', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/cam1/ab-assignment');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 404 for non-existent campaign', async () => {
+    const db = (t) => chain(null);
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/fake/ab-assignment', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('should return 400 when campaign has no A/B test', async () => {
+    const campaign = { id: 'cam1', name: 'No AB', ab_test_id: null };
+    const db = (t) => chain(campaign);
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/cam1/ab-assignment', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 400);
+    assert.ok(res.body.error.message.includes('A/B test'));
+  });
+
+  it('should return variant assignment for valid A/B campaign', async () => {
+    const campaign = {
+      id: 'cam1', name: 'AB Test', ab_test_id: 'test-1',
+      ab_variants: [{ name: 'control', weight: 0.5 }, { name: 'variant_a', weight: 0.5 }],
+      current_rollout_percent: 100,
+    };
+    const db = (t) => chain(campaign);
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/cam1/ab-assignment', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.variant !== undefined, 'Response should include variant');
+    assert.equal(res.body.test_id, 'test-1');
+    assert.ok(['control', 'variant_a'].includes(res.body.variant), 'Variant should be one of the configured options');
+  });
+});
+
+describe('POST /api/campaigns/:id/placements', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/campaigns/cam1/placements', {
+      body: { slot: 'banner' },
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 400 without slot', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/campaigns/cam1/placements', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+      body: {},
+    });
+    assert.equal(res.status, 400);
+    assert.ok(res.body.error.message.includes('slot'));
+  });
+
+  it('should create placement with all fields', async () => {
+    const placement = { id: 'pl1', campaign_id: 'cam1', slot: 'homepage_banner', priority: 5, content: '{"text":"hello"}' };
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      if (t === 'placements') return chain([placement]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/campaigns/cam1/placements', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+      body: { slot: 'homepage_banner', content: { text: 'hello' }, priority: 5 },
+    });
+    assert.equal(res.status, 201);
+    assert.equal(res.body.id, 'pl1');
+    assert.equal(res.body.slot, 'homepage_banner');
+    assert.equal(res.body.priority, 5);
+    assert.equal(res.body.campaign_id, 'cam1');
+  });
+});
+
+describe('GET /api/campaigns/placements/active', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/placements/active?slot=banner');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 400 without slot query param', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/placements/active', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 400);
+    assert.ok(res.body.error.message.includes('slot'));
+  });
+
+  it('should return active placements for a given slot', async () => {
+    const placements = [
+      { id: 'pl1', slot: 'homepage_banner', priority: 10, campaign_id: 'cam1' },
+    ];
+    const db = (t) => {
+      if (t === 'placements') return chain(placements);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/placements/active?slot=homepage_banner', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body), 'Response should be an array');
+  });
+});
+
+describe('GET /api/campaigns/analytics/ab-test/:testId', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/analytics/ab-test/test-1');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 for Participant (no campaigns.analytics)', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/analytics/ab-test/test-1', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('should return A/B test results grouped by variant', async () => {
+    const events = [
+      { ab_variant: 'control', event_type: 'click', count: '10', unique_users: '5' },
+      { ab_variant: 'variant_a', event_type: 'click', count: '15', unique_users: '8' },
+    ];
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      if (t === 'analytics_events') return chain(events);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/campaigns/analytics/ab-test/test-1', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.test_id, 'test-1');
+    assert.ok(res.body.variants !== undefined, 'Response should contain variants');
+    assert.ok(res.body.variants.control !== undefined, 'Should have control variant');
+    assert.ok(res.body.variants.variant_a !== undefined, 'Should have variant_a');
+    assert.equal(res.body.variants.control.click.count, 10);
+    assert.equal(res.body.variants.control.click.unique_users, 5);
+    assert.equal(res.body.variants.variant_a.click.count, 15);
+    assert.equal(res.body.variants.variant_a.click.unique_users, 8);
+  });
+});
+
 describe('POST /api/campaigns', () => {
-  it('should return 400 without name', async () => {
+  it('should return 400 without name and include error message', async () => {
     const db = (t) => {
       if (t === 'users') return chain({ is_active: true });
       if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
@@ -60,6 +320,8 @@ describe('POST /api/campaigns', () => {
       body: {},
     });
     assert.equal(res.status, 400);
+    assert.ok(res.body.error, 'Response should contain error');
+    assert.ok(res.body.error.message.includes('name'), 'Error should mention missing name');
   });
 
   it('should create campaign', async () => {

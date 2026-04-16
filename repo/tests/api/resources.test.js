@@ -48,13 +48,241 @@ async function req(app, method, path, opts = {}) {
 }
 
 describe('GET /api/resources', () => {
-  it('should return resource list', async () => {
+  it('should return resource list with pagination', async () => {
     const db = (t) => chain([{ count: '0' }]);
     db.raw = () => Promise.resolve({ rows: [] });
     const res = await req(buildApp(db), 'GET', '/api/resources', {
       headers: { Authorization: authHeader(FIXTURES.participantUser) },
     });
     assert.equal(res.status, 200);
+    assert.ok(res.body.data !== undefined, 'Response should contain data');
+    assert.ok(res.body.pagination !== undefined, 'Response should contain pagination');
+    assert.equal(res.body.pagination.page, 1);
+    assert.equal(typeof res.body.pagination.total, 'number');
+  });
+});
+
+describe('GET /api/resources/:id', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/resources/r1');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 when non-admin has no ACL access', async () => {
+    const db = (t) => {
+      if (t === 'resources') return chain(null);
+      if (t === 'user_roles') return chain([]);
+      if (t === 'roles') return chain(null);
+      if (t === 'acl_entries') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/resources/fake', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 403);
+    assert.ok(res.body.error.message.includes('read'), 'Error should mention denied read access');
+  });
+
+  it('should return 404 for non-existent resource when admin has access', async () => {
+    const db = (t) => {
+      if (t === 'resources') return chain(null);
+      if (t === 'user_roles') return chain(['role-admin']);
+      if (t === 'roles') return chain({ id: 'role-admin', name: 'Administrator' });
+      if (t === 'acl_entries') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/resources/fake', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('should return resource with ACL entries', async () => {
+    const resource = { id: 'r1', type: 'folder', name: 'Docs', owner_id: FIXTURES.adminUser.id };
+    const acls = [
+      { id: 'acl1', resource_id: 'r1', user_id: 'u1', action: 'read', effect: 'allow' },
+      { id: 'acl2', resource_id: 'r1', role_id: 'role1', action: 'edit', effect: 'deny' },
+    ];
+    const db = (t) => {
+      if (t === 'resources') return chain(resource);
+      if (t === 'user_roles') return chain(['role-admin']);
+      if (t === 'roles') return chain({ id: 'role-admin', name: 'Administrator' });
+      if (t === 'acl_entries') return chain(acls);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/resources/r1', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.id, 'r1');
+    assert.equal(res.body.name, 'Docs');
+    assert.equal(res.body.type, 'folder');
+    assert.ok(Array.isArray(res.body.acl), 'Response should include acl array');
+    assert.equal(res.body.acl.length, 2);
+    assert.equal(res.body.acl[0].action, 'read');
+    assert.equal(res.body.acl[0].effect, 'allow');
+    assert.equal(res.body.acl[1].action, 'edit');
+    assert.equal(res.body.acl[1].effect, 'deny');
+  });
+});
+
+describe('DELETE /api/resources/:id', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'DELETE', '/api/resources/r1');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 404 for non-existent resource (admin bypasses ACL)', async () => {
+    const db = (t) => {
+      if (t === 'resources') return chain(null);
+      if (t === 'user_roles') return chain(['role-admin']);
+      if (t === 'roles') return chain({ id: 'role-admin', name: 'Administrator' });
+      if (t === 'acl_entries') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'DELETE', '/api/resources/fake', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('should delete resource and return 204', async () => {
+    const resource = { id: 'r1', type: 'folder', name: 'Docs', owner_id: FIXTURES.adminUser.id };
+    const db = (t) => {
+      if (t === 'resources') return chain(resource);
+      if (t === 'user_roles') return chain(['role-admin']);
+      if (t === 'roles') return chain({ id: 'role-admin', name: 'Administrator' });
+      if (t === 'acl_entries') return chain([]);
+      if (t === 'audit_logs') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'DELETE', '/api/resources/r1', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 204);
+  });
+});
+
+describe('DELETE /api/resources/:resourceId/acl/:aclId', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'DELETE', '/api/resources/r1/acl/acl1');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 for Participant (no resources.manage_acl)', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'DELETE', '/api/resources/r1/acl/acl1', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('should return 404 for non-existent ACL entry', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      if (t === 'acl_entries') return chain(null);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'DELETE', '/api/resources/r1/acl/fake', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('should delete ACL entry and return 204', async () => {
+    const entry = { id: 'acl1', resource_id: 'r1', user_id: 'u1', action: 'read', effect: 'allow' };
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      if (t === 'acl_entries') return chain(entry);
+      if (t === 'audit_logs') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'DELETE', '/api/resources/r1/acl/acl1', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 204);
+  });
+});
+
+describe('POST /api/resources/:id/acl/propagate', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/resources/r1/acl/propagate');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 for Participant (no resources.manage_acl)', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/resources/r1/acl/propagate', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('should return 404 for non-existent resource', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      if (t === 'resources') return chain(null);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/resources/fake/acl/propagate', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('should propagate ACL to children and return count', async () => {
+    const resource = { id: 'r1', type: 'folder', name: 'Parent' };
+    const children = [
+      { id: 'r2', type: 'file', name: 'Child1', parent_id: 'r1' },
+      { id: 'r3', type: 'file', name: 'Child2', parent_id: 'r1' },
+    ];
+    const parentAcls = [
+      { id: 'acl1', resource_id: 'r1', user_id: 'u1', action: 'read', effect: 'allow' },
+    ];
+    let callIdx = 0;
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Administrator);
+      if (t === 'resources') {
+        callIdx++;
+        if (callIdx === 1) return chain(resource); // .first() for parent lookup
+        return chain(children); // children query
+      }
+      if (t === 'acl_entries') return chain(parentAcls);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/resources/r1/acl/propagate', {
+      headers: { Authorization: authHeader(FIXTURES.adminUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.message.includes('children'), 'Response should mention children');
+    assert.ok(res.body.entries_created !== undefined, 'Should include entries_created count');
   });
 });
 

@@ -57,7 +57,7 @@ describe('GET /api/plans', () => {
     assert.equal(res.status, 401);
   });
 
-  it('should return plans list', async () => {
+  it('should return plans list with pagination structure', async () => {
     const db = (t) => {
       if (t === 'plans') return chain([{ count: '0' }]);
       return chain([]);
@@ -67,6 +67,12 @@ describe('GET /api/plans', () => {
       headers: { Authorization: authHeader(FIXTURES.participantUser) },
     });
     assert.equal(res.status, 200);
+    assert.ok(res.body.data !== undefined, 'Response should contain data array');
+    assert.ok(res.body.pagination !== undefined, 'Response should contain pagination');
+    assert.equal(res.body.pagination.page, 1);
+    assert.equal(res.body.pagination.per_page, 20);
+    assert.equal(typeof res.body.pagination.total, 'number');
+    assert.equal(typeof res.body.pagination.total_pages, 'number');
   });
 });
 
@@ -103,7 +109,7 @@ describe('GET /api/plans/:id', () => {
 });
 
 describe('POST /api/plans', () => {
-  it('should return 400 without title', async () => {
+  it('should return 400 without title and include error message', async () => {
     const db = (t) => {
       if (t === 'users') return chain({ is_active: true });
       if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Coach);
@@ -115,6 +121,8 @@ describe('POST /api/plans', () => {
       body: {},
     });
     assert.equal(res.status, 400);
+    assert.ok(res.body.error, 'Response should contain error object');
+    assert.ok(res.body.error.message.includes('title'), 'Error should mention missing title');
   });
 
   it('should create plan for Coach', async () => {
@@ -251,6 +259,108 @@ describe('DELETE /api/plans/:planId/tasks/:taskId', () => {
   });
 });
 
+describe('GET /api/plans/:id/tasks', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/plans/p1/tasks');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return tasks array for a plan', async () => {
+    const tasks = [
+      { id: 't1', title: 'Push-ups', plan_id: 'p1', sort_order: 0, type: 'exercise' },
+      { id: 't2', title: 'Rest Day', plan_id: 'p1', sort_order: 1, type: 'rest' },
+    ];
+    const db = (t) => {
+      if (t === 'tasks') return chain(tasks);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/plans/p1/tasks', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body), 'Response should be an array');
+    assert.equal(res.body.length, 2);
+    assert.equal(res.body[0].id, 't1');
+    assert.equal(res.body[0].title, 'Push-ups');
+    assert.equal(res.body[0].type, 'exercise');
+    assert.equal(res.body[1].id, 't2');
+    assert.equal(res.body[1].title, 'Rest Day');
+  });
+
+  it('should return empty array when plan has no tasks', async () => {
+    const db = (t) => {
+      if (t === 'tasks') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/plans/p1/tasks', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body));
+    assert.equal(res.body.length, 0);
+  });
+});
+
+describe('PUT /api/plans/:planId/tasks/:taskId', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'PUT', '/api/plans/p1/tasks/t1', { body: { title: 'Updated' } });
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 for Participant (no plans.update)', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'PUT', '/api/plans/p1/tasks/t1', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+      body: { title: 'Updated' },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('should return 404 for non-existent task', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Coach);
+      if (t === 'tasks') return chain([undefined]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'PUT', '/api/plans/p1/tasks/fake', {
+      headers: { Authorization: authHeader(FIXTURES.coachUser) },
+      body: { title: 'Updated' },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('should update task and return updated fields', async () => {
+    const updated = { id: 't1', title: 'Updated Push-ups', plan_id: 'p1', sort_order: 2, type: 'assessment' };
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Coach);
+      if (t === 'tasks') return chain([updated]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'PUT', '/api/plans/p1/tasks/t1', {
+      headers: { Authorization: authHeader(FIXTURES.coachUser) },
+      body: { title: 'Updated Push-ups', sort_order: 2, type: 'assessment' },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.id, 't1');
+    assert.equal(res.body.title, 'Updated Push-ups');
+    assert.equal(res.body.sort_order, 2);
+    assert.equal(res.body.type, 'assessment');
+  });
+});
+
 describe('POST /api/plans/:id/tasks', () => {
   it('should return 400 without title', async () => {
     const db = (t) => {
@@ -264,13 +374,15 @@ describe('POST /api/plans/:id/tasks', () => {
       body: {},
     });
     assert.equal(res.status, 400);
+    assert.ok(res.body.error.message.includes('title'));
   });
 
-  it('should create task', async () => {
+  it('should create task with correct fields', async () => {
+    const created = { id: 't1', title: 'Push-ups', plan_id: 'p1', sort_order: 0, type: 'exercise', config: '{}' };
     const db = (t) => {
       if (t === 'users') return chain({ is_active: true });
       if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Coach);
-      if (t === 'tasks') return chain([{ id: 't1', title: 'Push-ups', plan_id: 'p1' }]);
+      if (t === 'tasks') return chain([created]);
       return chain([]);
     };
     db.raw = () => Promise.resolve({ rows: [] });
@@ -279,5 +391,8 @@ describe('POST /api/plans/:id/tasks', () => {
       body: { title: 'Push-ups' },
     });
     assert.equal(res.status, 201);
+    assert.equal(res.body.id, 't1');
+    assert.equal(res.body.title, 'Push-ups');
+    assert.equal(res.body.plan_id, 'p1');
   });
 });

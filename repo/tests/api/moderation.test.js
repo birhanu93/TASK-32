@@ -61,7 +61,7 @@ describe('GET /api/moderation/cases', () => {
     assert.equal(res.status, 403);
   });
 
-  it('should return cases for Reviewer', async () => {
+  it('should return cases with pagination for Reviewer', async () => {
     const db = (t) => {
       if (t === 'users') return chain({ is_active: true });
       if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Reviewer);
@@ -73,6 +73,74 @@ describe('GET /api/moderation/cases', () => {
       headers: { Authorization: authHeader(FIXTURES.reviewerUser) },
     });
     assert.equal(res.status, 200);
+    assert.ok(res.body.data !== undefined, 'Response should contain data');
+    assert.ok(res.body.pagination !== undefined, 'Response should contain pagination');
+    assert.equal(res.body.pagination.page, 1);
+    assert.equal(res.body.pagination.per_page, 20);
+    assert.equal(typeof res.body.pagination.total, 'number');
+  });
+});
+
+describe('GET /api/moderation/cases/:id', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/moderation/cases/c1');
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 for Participant', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/moderation/cases/c1', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('should return 404 for non-existent case', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Reviewer);
+      if (t === 'moderation_cases') return chain(null);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/moderation/cases/fake', {
+      headers: { Authorization: authHeader(FIXTURES.reviewerUser) },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it('should return case detail with content and appeals', async () => {
+    const modCase = { id: 'c1', content_item_id: 'ci1', status: 'open', reported_by: 'u1' };
+    const content = { id: 'ci1', title: 'Test Content', author_id: 'u2' };
+    const appeals = [{ id: 'a1', moderation_case_id: 'c1', reason: 'Disagree' }];
+    let callCount = 0;
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Reviewer);
+      if (t === 'moderation_cases') return chain(modCase);
+      if (t === 'content_items') return chain(content);
+      if (t === 'appeals') return chain(appeals);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'GET', '/api/moderation/cases/c1', {
+      headers: { Authorization: authHeader(FIXTURES.reviewerUser) },
+    });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.id, 'c1');
+    assert.equal(res.body.status, 'open');
+    assert.ok(res.body.content, 'Response should include content');
+    assert.equal(res.body.content.id, 'ci1');
+    assert.equal(res.body.content.title, 'Test Content');
+    assert.ok(Array.isArray(res.body.appeals), 'Response should include appeals array');
+    assert.equal(res.body.appeals.length, 1);
+    assert.equal(res.body.appeals[0].reason, 'Disagree');
   });
 });
 

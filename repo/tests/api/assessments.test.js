@@ -51,9 +51,13 @@ async function req(app, method, path, opts = {}) {
 }
 
 describe('GET /api/assessments/rules', () => {
-  it('should return rules list', async () => {
+  it('should return rules list as array', async () => {
+    const rules = [
+      { id: 'r1', assessment_type: 'fitness', version: 2, is_active: true },
+      { id: 'r2', assessment_type: 'fitness', version: 1, is_active: false },
+    ];
     const db = (t) => {
-      if (t === 'assessment_rules') return chain([]);
+      if (t === 'assessment_rules') return chain(rules);
       return chain([]);
     };
     db.raw = () => Promise.resolve({ rows: [] });
@@ -61,6 +65,10 @@ describe('GET /api/assessments/rules', () => {
       headers: { Authorization: authHeader(FIXTURES.participantUser) },
     });
     assert.equal(res.status, 200);
+    assert.ok(Array.isArray(res.body), 'Response should be an array');
+    assert.equal(res.body.length, 2);
+    assert.equal(res.body[0].assessment_type, 'fitness');
+    assert.equal(res.body[0].version, 2);
   });
 });
 
@@ -167,11 +175,51 @@ describe('POST /api/assessments/compute', () => {
       body: {},
     });
     assert.equal(res.status, 400);
+    assert.ok(res.body.error.message.includes('assessment_type'));
+  });
+});
+
+describe('POST /api/assessments/compute/:userId', () => {
+  it('should return 401 without auth', async () => {
+    const db = () => chain([]); db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/assessments/compute/some-user-id', {
+      body: { assessment_type: 'fitness' },
+    });
+    assert.equal(res.status, 401);
+  });
+
+  it('should return 403 for Participant (no assessments.compute_any)', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain([]);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/assessments/compute/some-user-id', {
+      headers: { Authorization: authHeader(FIXTURES.participantUser) },
+      body: { assessment_type: 'fitness' },
+    });
+    assert.equal(res.status, 403);
+  });
+
+  it('should return 400 without assessment_type', async () => {
+    const db = (t) => {
+      if (t === 'users') return chain({ is_active: true });
+      if (t === 'user_roles') return chain(ROLE_PERMISSIONS.Coach);
+      return chain([]);
+    };
+    db.raw = () => Promise.resolve({ rows: [] });
+    const res = await req(buildApp(db), 'POST', '/api/assessments/compute/some-user-id', {
+      headers: { Authorization: authHeader(FIXTURES.coachUser) },
+      body: {},
+    });
+    assert.equal(res.status, 400);
+    assert.ok(res.body.error.message.includes('assessment_type'));
   });
 });
 
 describe('GET /api/assessments/scores/me', () => {
-  it('should return score history', async () => {
+  it('should return score history with pagination', async () => {
     const db = (t) => {
       if (t === 'computed_scores') return chain([{ count: '0' }]);
       return chain([]);
@@ -181,6 +229,11 @@ describe('GET /api/assessments/scores/me', () => {
       headers: { Authorization: authHeader(FIXTURES.participantUser) },
     });
     assert.equal(res.status, 200);
+    assert.ok(res.body.data !== undefined, 'Response should contain data');
+    assert.ok(res.body.pagination !== undefined, 'Response should contain pagination');
+    assert.equal(res.body.pagination.page, 1);
+    assert.equal(res.body.pagination.per_page, 20);
+    assert.equal(typeof res.body.pagination.total, 'number');
   });
 });
 
