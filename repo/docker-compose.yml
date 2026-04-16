@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: training_assessment
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -28,10 +28,10 @@ services:
       DB_PORT: 5432
       DB_NAME: training_assessment
       DB_USER: postgres
-      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
-      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY must be set}
-      CERTIFICATE_SECRET: ${CERTIFICATE_SECRET:?CERTIFICATE_SECRET must be set}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      JWT_SECRET: ${JWT_SECRET:-default_jwt_secret_change_in_production}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-default_encryption_key_change_in_production}
+      CERTIFICATE_SECRET: ${CERTIFICATE_SECRET:-default_certificate_secret_change_in_production}
     depends_on:
       db:
         condition: service_healthy
